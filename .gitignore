@@ -1,0 +1,9 @@
+
+# Local large RNAGenesis artifacts downloaded from Zenodo
+checkpoints.zip
+configs.zip
+progen2-base.zip
+progen2-small.zip
+checkpoints/
+configs/
+models/autoencoder/decoder/checkpoints/
