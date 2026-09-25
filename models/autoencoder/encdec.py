@@ -113,8 +113,17 @@ class EncDec(PreTrainedModel):
                 qt_from_hidden_size = self.encoder.embed_dim
                 self.num_layers = self.encoder.num_layers
             elif self.rna_encoder_type == "biomap":
-                qt_from_hidden_size = 1280
-                self.num_layers = 32
+                # Pinned xTrimoPGLMModel. Weights are the released EncDec
+                # encoder.* tensors loaded by EncDec.from_pretrained. This
+                # does not fetch Zaixi/RNAGenesis pytorch_model.bin.
+                from .encoder.biomap import xTrimoPGLMConfig, xTrimoPGLMModel
+                biomap_dir = os.path.join(os.path.dirname(__file__), "encoder", "biomap")
+                biomap_config = xTrimoPGLMConfig.from_json_file(
+                    os.path.join(biomap_dir, "config.json")
+                )
+                self.encoder = xTrimoPGLMModel(biomap_config, empty_init=True)
+                qt_from_hidden_size = biomap_config.hidden_size
+                self.num_layers = biomap_config.num_layers
             else:
                 print(f"{self.rna_encoder_type} is not a supported rna encoder type!")
                 raise ValueError
@@ -152,6 +161,33 @@ class EncDec(PreTrainedModel):
             self.transform.bias.requires_grad = False
         self.config = config
         self.qt_from_hidden_size = qt_from_hidden_size
+
+    def freeze(self):
+        """Put the complete EncDec in the approved frozen state.
+
+        Eval mode plus requires_grad=False on every parameter, including the
+        encoder, Q-Former, query embeddings, latent projection and decoder.
+        """
+        self.eval()
+        for param in self.parameters():
+            param.requires_grad_(False)
+        return self
+
+    def get_latent(self, input_ids, attention_mask):
+        """Approved biomap sequence-to-latent path. Does not apply transform."""
+        if self.data_type != "rna" or self.rna_encoder_type != "biomap":
+            raise NotImplementedError(
+                "get_latent is implemented only for the approved biomap RNA path"
+            )
+        # encoder(input_ids) only: no position_ids, no encoder attention_mask.
+        outputs = self.encoder(input_ids)
+        hidden = outputs.last_hidden_state  # [L, B, 1280]
+        hidden = hidden.transpose(0, 1)  # [B, L, 1280]
+        qt_out = self.qt(
+            encoder_hidden_states=hidden,
+            encoder_attention_mask=attention_mask,
+        )
+        return qt_out.last_hidden_state  # [B, 32, 160]
 
     def forward(self, input_ids, attention_mask, decoder_input_ids, decoder_attention_mask, labels):
 

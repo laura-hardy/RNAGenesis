@@ -1,0 +1,26 @@
+{
+  "additional_special_tokens": [
+    "tMASK",
+    "gMASK",
+    "sMASK",
+    "eod",
+    "sop",
+    "eop",
+    "<cls>",
+    "UNK",
+    "</s>"
+  ],
+  "auto_map": {
+    "AutoTokenizer": [
+      "tokenization_xtrimopglm.xTrimoPGLMTokenizer",
+      null
+    ]
+  },
+  "clean_up_tokenization_spaces": true,
+  "eos_token": "<eos>",
+  "mask_token": "<mask>",
+  "model_max_length": 2048,
+  "pad_token": "<pad>",
+  "tokenizer_class": "xTrimoPGLMTokenizer",
+  "unk_token": "<unk>"
+}

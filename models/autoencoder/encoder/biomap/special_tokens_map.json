@@ -1,0 +1,17 @@
+{
+  "additional_special_tokens": [
+    "<pad>",
+    "<mask>",
+    "<gmask>",
+    "<smask>",
+    "<eod>",
+    "<sop>",
+    "<eop>",
+    "<eos>",
+    "<unk>"
+  ],
+  "eos_token": "<eos>",
+  "mask_token": "<mask>",
+  "pad_token": "<pad>",
+  "unk_token": "<unk>"
+}

@@ -1,0 +1,7 @@
+# Preserve whitespace in byte-for-byte or near-byte-for-byte vendored upstream
+# files. Their provenance is checked against the pinned Zaixi/RNAGenesis
+# revision rather than normalized to this repository's whitespace policy.
+config.json whitespace=-trailing-space
+configuration_xtrimopglm.py whitespace=-trailing-space
+modeling_xtrimopglm.py whitespace=-trailing-space
+tokenization_xtrimopglm.py whitespace=-trailing-space
