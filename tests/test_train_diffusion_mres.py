@@ -212,20 +212,70 @@ class FreezeAndOptimizerTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             trainer.assert_complete_trainable(denoiser, expected_total=None)
 
-    def test_expected_count_constant_matches_b1_header(self):
+    def test_b1_header_is_serialized_state_not_parameter_count(self):
         path = trainer.B1_DIFFUSION_DIR / "unet" / "diffusion_pytorch_model.safetensors"
         with path.open("rb") as handle:
             header_size = struct.unpack("<Q", handle.read(8))[0]
             header = json.loads(handle.read(header_size))
-        counted = 0
+        serialized = 0
+        buffers = 0
+        buffer_names = []
         for key, value in header.items():
             if key == "__metadata__":
                 continue
             product = 1
             for dim in value["shape"]:
                 product *= dim
-            counted += product
-        self.assertEqual(counted, trainer.EXPECTED_DENOISER_PARAMETER_COUNT)
+            serialized += product
+            if key.endswith(".pos_embed.pe"):
+                self.assertEqual(value["shape"], [1, 1024, 2048])
+                buffers += product
+                buffer_names.append(key)
+        parameters = serialized - buffers
+        self.assertEqual(
+            sorted(buffer_names, key=lambda name: int(name.split(".")[1])),
+            ["transformer_blocks.%d.pos_embed.pe" % index for index in range(24)],
+        )
+        self.assertEqual(serialized, trainer.EXPECTED_DENOISER_SERIALIZED_STATE_ELEMENT_COUNT)
+        self.assertEqual(buffers, trainer.EXPECTED_DENOISER_BUFFER_ELEMENT_COUNT)
+        self.assertEqual(parameters, trainer.EXPECTED_DENOISER_PARAMETER_COUNT)
+        self.assertEqual(parameters + buffers, serialized)
+        self.assertNotEqual(serialized, trainer.EXPECTED_DENOISER_PARAMETER_COUNT)
+
+    def test_state_accounting_keeps_buffers_out_of_parameters_and_optimizer(self):
+        class WithBuffer(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.weight = torch.nn.Parameter(torch.ones(4))
+                self.register_buffer("pe", torch.zeros(1, 2, 3))
+
+        denoiser = WithBuffer()
+        encdec = torch.nn.Linear(4, 4)
+        encdec.eval()
+        for parameter in encdec.parameters():
+            parameter.requires_grad_(False)
+        report = trainer.denoiser_state_report(denoiser)
+        self.assertEqual(report["total"], 4)
+        self.assertEqual(report["trainable"], 4)
+        self.assertEqual(report["frozen"], 0)
+        self.assertEqual(report["buffer_elements"], 6)
+        self.assertEqual(report["serialized_state_elements"], 10)
+        self.assertEqual(report["total"] + report["buffer_elements"], report["serialized_state_elements"])
+        trainer.assert_complete_trainable(denoiser, expected_total=4)
+        optimizer = trainer.build_adamw(denoiser, trainer.DEFAULT_LEARNING_RATE)
+        trainer.assert_optimizer_membership(optimizer, denoiser, encdec)
+        optimizer_ids = {id(parameter) for parameter in optimizer.param_groups[0]["params"]}
+        self.assertEqual(optimizer_ids, {id(denoiser.weight)})
+        self.assertNotIn(id(denoiser.pe), optimizer_ids)
+
+    def test_released_count_constants_partition_serialized_state(self):
+        self.assertEqual(
+            trainer.EXPECTED_DENOISER_PARAMETER_COUNT + trainer.EXPECTED_DENOISER_BUFFER_ELEMENT_COUNT,
+            trainer.EXPECTED_DENOISER_SERIALIZED_STATE_ELEMENT_COUNT,
+        )
+        self.assertEqual(trainer.EXPECTED_DENOISER_PARAMETER_COUNT, 1_911_589_344)
+        self.assertEqual(trainer.EXPECTED_DENOISER_BUFFER_ELEMENT_COUNT, 50_331_648)
+        self.assertEqual(trainer.EXPECTED_DENOISER_SERIALIZED_STATE_ELEMENT_COUNT, 1_961_920_992)
 
 
 class ValidationDrawTests(unittest.TestCase):

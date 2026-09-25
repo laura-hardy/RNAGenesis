@@ -54,8 +54,12 @@ B1_DIFFUSION_DIR = REPO_ROOT / "configs" / "rnagenesis" / "diffusion"
 B0_DIFFUSION_DIR = REPO_ROOT / "checkpoints" / "Aptamer" / "diffusion"
 ENCDEC_DIR = REPO_ROOT / "configs" / "rnagenesis" / "autoencoder"
 
-# Measured from B1 safetensors metadata. Runtime code still counts parameters.
-EXPECTED_DENOISER_PARAMETER_COUNT = 1_961_920_992
+# Released B1 TransformerDenoiser. Parameters are nn.Parameter elements only.
+# The 24 sinusoidal pos_embed.pe tables are registered buffers, not parameters.
+# Serialized state is the safetensors tensor total: parameters plus those buffers.
+EXPECTED_DENOISER_PARAMETER_COUNT = 1_911_589_344
+EXPECTED_DENOISER_BUFFER_ELEMENT_COUNT = 50_331_648
+EXPECTED_DENOISER_SERIALIZED_STATE_ELEMENT_COUNT = 1_961_920_992
 
 LATENT_QUERIES = 32
 LATENT_CHANNELS = 160
@@ -466,15 +470,54 @@ def parameter_report(module: torch.nn.Module) -> Dict[str, int]:
 
 def assert_complete_trainable(module: torch.nn.Module, expected_total: Optional[int] = None) -> Dict[str, int]:
     report = parameter_report(module)
-    if report["trainable"] != report["total"]:
+    if report["trainable"] != report["total"] or report["frozen"] != 0:
         raise AssertionError(
-            "trainable parameter count %d != complete parameter count %d"
-            % (report["trainable"], report["total"])
+            "trainable parameter count %d != complete parameter count %d (frozen %d)"
+            % (report["trainable"], report["total"], report["frozen"])
         )
-    if expected_total is not None and report["total"] != expected_total:
+    if expected_total is not None and (
+        report["total"] != expected_total or report["trainable"] != expected_total
+    ):
         raise AssertionError(
-            "parameter count %d != expected %d" % (report["total"], expected_total)
+            "parameter count %d (trainable %d) != expected %d"
+            % (report["total"], report["trainable"], expected_total)
         )
+    return report
+
+
+def denoiser_state_report(module: torch.nn.Module) -> Dict[str, int]:
+    """Parameter, buffer, and serialized-state element counts.
+
+    Buffers stay out of this report's parameter fields. state_dict includes
+    parameters and persistent buffers.
+    """
+    report = parameter_report(module)
+    buffer_elements = sum(buffer.numel() for buffer in module.buffers())
+    serialized_state_elements = sum(tensor.numel() for tensor in module.state_dict().values())
+    report["buffer_elements"] = buffer_elements
+    report["serialized_state_elements"] = serialized_state_elements
+    return report
+
+
+def assert_denoiser_state(module: torch.nn.Module) -> Dict[str, int]:
+    report = assert_complete_trainable(module, EXPECTED_DENOISER_PARAMETER_COUNT)
+    state = denoiser_state_report(module)
+    if state["buffer_elements"] != EXPECTED_DENOISER_BUFFER_ELEMENT_COUNT:
+        raise AssertionError(
+            "buffer element count %d != expected %d"
+            % (state["buffer_elements"], EXPECTED_DENOISER_BUFFER_ELEMENT_COUNT)
+        )
+    if state["serialized_state_elements"] != EXPECTED_DENOISER_SERIALIZED_STATE_ELEMENT_COUNT:
+        raise AssertionError(
+            "serialized state element count %d != expected %d"
+            % (state["serialized_state_elements"], EXPECTED_DENOISER_SERIALIZED_STATE_ELEMENT_COUNT)
+        )
+    if state["total"] + state["buffer_elements"] != state["serialized_state_elements"]:
+        raise AssertionError(
+            "parameter elements %d + buffer elements %d != serialized state elements %d"
+            % (state["total"], state["buffer_elements"], state["serialized_state_elements"])
+        )
+    report.update(state)
     return report
 
 
@@ -507,6 +550,9 @@ def assert_optimizer_membership(optimizer: torch.optim.Optimizer, denoiser: torc
         raise AssertionError("optimizer contains an EncDec parameter")
     if optimizer_ids & frozen_ids:
         raise AssertionError("optimizer contains a frozen parameter")
+    buffer_ids = {id(buffer) for buffer in list(denoiser.buffers()) + list(encdec.buffers())}
+    if optimizer_ids & buffer_ids:
+        raise AssertionError("optimizer contains a registered buffer")
 
 
 def assert_b1_initialization_path(path: Path) -> Path:
@@ -535,7 +581,7 @@ def load_frozen_encdec(path: Path) -> EncDec:
 def load_b1_denoiser(path: Path) -> TransformerDenoiser:
     assert_b1_initialization_path(path)
     denoiser = TransformerDenoiser.from_pretrained(str(path), subfolder="unet")
-    assert_complete_trainable(denoiser, EXPECTED_DENOISER_PARAMETER_COUNT)
+    assert_denoiser_state(denoiser)
     if denoiser.config.in_channels != LATENT_CHANNELS:
         raise AssertionError("denoiser in_channels is not %d" % LATENT_CHANNELS)
     return denoiser
@@ -810,6 +856,8 @@ def build_run_metadata(args, plan: UpdatePlan, denoiser_report: dict, encdec_fro
         "validation_noise_sha256": sha256_text(draws.noise.cpu().numpy().tobytes().hex()),
         "denoiser_parameter_count": denoiser_report["total"],
         "denoiser_trainable_parameter_count": denoiser_report["trainable"],
+        "denoiser_buffer_element_count": denoiser_report["buffer_elements"],
+        "denoiser_serialized_state_element_count": denoiser_report["serialized_state_elements"],
         "encdec_frozen": encdec_frozen,
         "generation_weights": "raw",
         "ema": False,
@@ -898,7 +946,7 @@ def run_training(args: argparse.Namespace) -> dict:
 
     encdec = load_frozen_encdec(args.encdec_checkpoint)
     denoiser = load_b1_denoiser(args.pretrained_ckpts)
-    denoiser_report = assert_complete_trainable(denoiser, EXPECTED_DENOISER_PARAMETER_COUNT)
+    denoiser_report = assert_denoiser_state(denoiser)
     scheduler = load_scheduler(args.pretrained_ckpts)
     optimizer = build_adamw(denoiser, args.learning_rate)
     assert_optimizer_membership(optimizer, denoiser, encdec)
