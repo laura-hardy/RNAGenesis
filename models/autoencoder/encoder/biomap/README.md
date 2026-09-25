@@ -46,3 +46,13 @@ path. Encoder weights are the released RNAGenesis `EncDec` tensors
    from `__init__`.
 
 No other pinned source lines were edited.
+
+## Upstream licence / attribution
+
+The pinned Hugging Face `Zaixi/RNAGenesis` model card identifies the release
+under CC BY-NC 4.0. This vendored dependency retains attribution to the
+RNAGenesis authors and is pinned to revision
+`d8a42130984cbf04f6a5e16a3aa0c0d6578036a8`.
+
+No external model weights are vendored here. Encoder weights for
+this path come from the released RNAGenesis `EncDec` checkpoint.
